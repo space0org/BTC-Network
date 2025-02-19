@@ -1,0 +1,63 @@
+services:
+  node1:
+    container_name: node1
+    image: bitcoinsv/bitcoin-sv:1.0.8.beta
+    command: bitcoind
+    volumes:
+      - ./config/bitcoin.conf:/data/bitcoin.conf
+      - node1_data:/data
+    ports:
+      - "18332:18332"
+      - "18333:18333"
+      - "28332:28332"
+    expose:
+      - "18332"
+      - "18333"
+      - "28332"
+    networks:
+      - bitcoin_network
+
+  node2:
+    container_name: node2
+    image: bitcoinsv/bitcoin-sv:1.0.8.beta
+    command: bitcoind
+    volumes:
+      - ./config/bitcoin2.conf:/data/bitcoin.conf
+      - node2_data:/data
+    ports:
+      - "18502:18332"
+      - "18501:18333"
+      - "28333:28332"
+    expose:
+      - "18332"
+      - "18333"
+      - "28332"
+    networks:
+      - bitcoin_network
+
+  node3:
+    container_name: node3
+    image: bitcoinsv/bitcoin-sv:1.0.8.beta
+    command: bitcoind
+    volumes:
+      - ./config/bitcoin3.conf:/data/bitcoin.conf
+      - node3_data:/data
+    ports:
+      - "18602:18332"
+      - "18601:18333"
+      - "28334:28332"
+    expose:
+      - "18332"
+      - "18333"
+      - "28332"
+    networks:
+      - bitcoin_network
+
+networks:
+  bitcoin_network:
+    driver: bridge
+
+volumes:
+  node1_data:
+  node2_data:
+  node3_data:
