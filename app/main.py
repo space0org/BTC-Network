@@ -55,29 +55,72 @@ async def get_transaction(txid: str) -> Dict[str, Any]:
 async def get_mempool() -> Dict[str, List[Dict[str, Any]]]:
     try:
         rpc = get_rpc_connection()
-        mempool_txids = rpc.getrawmempool()
+        mempool_txids = {}
+        try:
+            raw_mempool = rpc.getrawmempool()
+            for txid in raw_mempool:
+                try:
+                    info = rpc.getmempoolentry(txid)
+                    mempool_txids[txid] = info
+                except:
+                    continue
+        except Exception:
+            return {"transactions": []}
         transactions = []
-        for txid in mempool_txids[:10]:  # Limit to 10 most recent
+        
+        # Sort by time, newest first
+        sorted_txids = sorted(mempool_txids.items(), key=lambda x: x[1].get('time', 0), reverse=True)
+        
+        for txid, info in sorted_txids[:10]:  # Limit to 10 most recent
             try:
                 tx = rpc.getrawtransaction(txid, 1)
+                
+                # Calculate total input value
+                input_value = 0
+                for vin in tx.get("vin", []):
+                    try:
+                        prev_tx = rpc.getrawtransaction(vin["txid"], 1)
+                        input_value += prev_tx["vout"][vin["vout"]]["value"]
+                    except Exception:
+                        continue
+                
+                # Calculate output value and fee
+                output_value = sum(vout["value"] for vout in tx.get("vout", []))
+                fee = input_value - output_value if input_value > 0 else 0
+                
                 transactions.append({
                     "txid": txid,
                     "time": tx.get("time", 0),
-                    "amount": sum(vout["value"] for vout in tx.get("vout", [])),
-                    "fee": 0.00001,  # Placeholder fee
-                    "confirmations": 0
+                    "size": info.get("size", 0),
+                    "vsize": info.get("vsize", 0),
+                    "amount": output_value,
+                    "fee": fee,
+                    "fee_per_byte": fee / info.get("size", 1) if fee > 0 else 0,
+                    "confirmations": 0,
+                    "input_count": len(tx.get("vin", [])),
+                    "output_count": len(tx.get("vout", [])),
                 })
             except Exception:
                 continue
+                
         return {"transactions": transactions}
     except Exception:
         # Return empty list instead of error for empty mempool
         return {"transactions": []}
 
 @app.get("/api/address/{address}")
-async def get_address_info(address: str) -> Dict[str, Any]:
+async def get_address_info(address: str, page: int = 1, limit: int = 10) -> Dict[str, Any]:
     try:
         rpc = get_rpc_connection()
+        # Handle different address formats
+        try:
+            # Validate the address
+            validate_result = rpc.validateaddress(address)
+            if not validate_result.get("isvalid", False):
+                raise HTTPException(status_code=400, detail=f"Invalid address format: {address}")
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Error validating address: {str(e)}")
+        
         # Get unspent transactions
         utxos = rpc.listunspent(0, 9999999, [address])
         
@@ -88,19 +131,55 @@ async def get_address_info(address: str) -> Dict[str, Any]:
         received_by_address = rpc.listreceivedbyaddress(0, True)
         address_info = next((entry for entry in received_by_address if entry["address"] == address), None)
         
-        if address_info is None:
-            return {
-                "address": address,
-                "balance": balance,
-                "utxos": utxos,
-                "transactions": []
-            }
-            
+        # Get transaction details
+        txids = address_info.get("txids", []) if address_info else []
+        total_txs = len(txids)
+        
+        # Paginate transactions
+        start_idx = (page - 1) * limit
+        end_idx = start_idx + limit
+        paginated_txids = txids[start_idx:end_idx]
+        
+        transactions = []
+        for txid in paginated_txids:
+            try:
+                tx = rpc.getrawtransaction(txid, 1)
+                
+                # Calculate input and output values for this address
+                received = sum(vout["value"] for vout in tx.get("vout", [])
+                             if any(addr == address for addr in vout.get("scriptPubKey", {}).get("addresses", [])))
+                
+                sent = 0
+                for vin in tx.get("vin", []):
+                    try:
+                        prev_tx = rpc.getrawtransaction(vin["txid"], 1)
+                        prev_vout = prev_tx["vout"][vin["vout"]]
+                        if any(addr == address for addr in prev_vout.get("scriptPubKey", {}).get("addresses", [])):
+                            sent += prev_vout["value"]
+                    except Exception:
+                        continue
+                
+                transactions.append({
+                    "txid": txid,
+                    "time": tx.get("time", 0),
+                    "confirmations": tx.get("confirmations", 0),
+                    "received": received,
+                    "sent": sent,
+                    "net": received - sent,
+                    "size": tx.get("size", 0),
+                })
+            except Exception:
+                continue
+                
         return {
             "address": address,
             "balance": balance,
+            "total_transactions": total_txs,
+            "page": page,
+            "limit": limit,
+            "total_pages": (total_txs + limit - 1) // limit,
+            "transactions": transactions,
             "utxos": utxos,
-            "transactions": address_info.get("txids", [])
         }
     except Exception as e:
         raise HTTPException(status_code=404, detail=f"Error fetching address info: {str(e)}")
